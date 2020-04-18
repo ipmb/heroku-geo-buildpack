@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -euf
+
+vendor_lib() {
+    LIBRARY=$1
+    VERSION=$2
+    LAYER_DIR=$3
+
+    if [ -f "$VENDORLAYER/.${LIBRARY}-VERSION" ] && [ "$(cat $VENDORLAYER/.${LIBRARY}-VERSION)" = "$VERSION" ]; then
+      echo "-----> Using ${LIBRARY}-${VERSION} from cache"
+      return
+    fi
+
+    echo "-----> Installing $LIBRARY-$VERSION"
+    if [ "$LIBRARY" = "GDAL" ] && [ "$VERSION" = "2.3.3" ]; then
+      BUCKET="ll-hotwheels"
+    else
+      # Heroku's bucket for their buildpack
+      BUCKET="bucketeer-9aa8f376-a619-404c-b004-6db0317bcfe8"
+    fi
+    LIBRARY_URL="https://$BUCKET.s3.amazonaws.com/$STACK/$LIBRARY/$LIBRARY-$VERSION.tar.gz"
+
+    mkdir -p $LAYER_DIR
+    if ! curl "${LIBRARY_URL}" -s | tar zxv -C $LAYER_DIR &> /dev/null; then
+      echo " !     Requested $LIBRARY Version ($VERSION) is not available for this stack ($STACK)."
+      echo " !     Aborting."
+      exit 1
+    fi
+
+    # Store library version to
+    echo -n "$VERSION" > "$LAYER_DIR/.${LIBRARY}-VERSION"
+}
+
+LAYERS_DIR=$1
+VENDORLAYER="$LAYERS_DIR/vendor"
+echo -e "cache = true\nbuild = true\nlaunch = true" > $VENDORLAYER.toml
+
+DEFAULT_GDAL_VERSION="2.4.0"
+DEFAULT_GEOS_VERSION="3.7.2"
+DEFAULT_PROJ_VERSION="5.2.0"
+
+GDAL_VERSION=${GDAL_VERSION:-$DEFAULT_GDAL_VERSION}
+GEOS_VERSION=${GEOS_VERSION:-$DEFAULT_GEOS_VERSION}
+PROJ_VERSION=${PROJ_VERSION:-$DEFAULT_PROJ_VERSION}
+
+vendor_lib "GDAL" "$GDAL_VERSION" "$VENDORLAYER"
+vendor_lib "GEOS" "$GEOS_VERSION" "$VENDORLAYER"
+vendor_lib "PROJ" "$PROJ_VERSION" "$VENDORLAYER"
+
+# Add some environment variables that are available to the next buildpacks, to ensure that pip can find the
+# GDAL installation as this is needed to pip install GDAL
+BUILD_ENV="$VENDORLAYER/env.build"
+mkdir -p "$BUILD_ENV"
+echo -n "$VENDORLAYER/include" > "$BUILD_ENV/CPLUS_INCLUDE_PATH"
+echo -n "$VENDORLAYER/include" > "$BUILD_ENV/C_INCLUDE_PATH"
+
+ENV="$VENDORLAYER/env"
+mkdir -p "$ENV"
+
+# Export vars
+echo -n "$VENDORLAYER/lib/libgdal.so" > $ENV/GDAL_LIBRARY_PATH
+echo -n "$VENDORLAYER/lib/libgeos_c.so" > $ENV/GEOS_LIBRARY_PATH
+echo -n "$VENDORLAYER/lib/libproj.so" > $ENV/PROJ4_LIBRARY_PATH
+echo -n "$VENDORLAYER/share/gdal" > $ENV/GDAL_DATA
+
